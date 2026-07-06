@@ -24,3 +24,21 @@ let status = client.daemon_status()?;
 println!("{} {}", status.node_id, status.version);
 # Ok::<(), Box<dyn std::error::Error>>(())
 ```
+
+Peer apps should use generic service requests and keep app-specific behavior in
+the app layer:
+
+```rust
+use colligerenet_sdk::Client;
+use serde_json::{Value, json};
+
+let mut client = Client::connect_default("my.app")?;
+let result = client.request_peer_service::<Value>(
+    "<peer-node-id>",
+    "example.service.v1",
+    "status",
+    json!({}),
+)?;
+println!("{result}");
+# Ok::<(), Box<dyn std::error::Error>>(())
+```

@@ -4,11 +4,12 @@ use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 
 use colligerenet_api::{
-    AdapterStatus, ApiEvent, ClipboardItem, ClipboardPublishParams, DaemonStatus, DatetimeStatus,
-    RpcRequest, RpcResponse, ServiceInfo, error_code, method,
+    PeerParams, RemoteServiceRequestParams, RpcRequest, RpcResponse, error_code, method,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
+
+pub use colligerenet_api::{AdapterStatus, ApiEvent, DaemonStatus, PeerInfo, ServiceInfo};
 
 pub type SdkResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
@@ -49,21 +50,47 @@ impl Client {
         self.call(method::SERVICES_LIST, None)
     }
 
-    pub fn datetime_status(&mut self) -> SdkResult<DatetimeStatus> {
-        self.call(method::DATETIME_STATUS, None)
+    pub fn peers(&mut self) -> SdkResult<Vec<PeerInfo>> {
+        self.call(method::PEERS_LIST, None)
     }
 
-    pub fn clipboard_publish(&mut self, content: impl Into<String>) -> SdkResult<ClipboardItem> {
+    pub fn peer(&mut self, node_id: impl Into<String>) -> SdkResult<Option<PeerInfo>> {
         self.call(
-            method::CLIPBOARD_PUBLISH,
-            Some(json!(ClipboardPublishParams {
-                content: content.into(),
+            method::PEERS_SHOW,
+            Some(json!(PeerParams {
+                node_id: node_id.into(),
             })),
         )
     }
 
-    pub fn clipboard_get(&mut self) -> SdkResult<Option<ClipboardItem>> {
-        self.call(method::CLIPBOARD_GET, None)
+    pub fn remove_peer(&mut self, node_id: impl Into<String>) -> SdkResult<bool> {
+        self.call(
+            method::PEERS_REMOVE,
+            Some(json!(PeerParams {
+                node_id: node_id.into(),
+            })),
+        )
+    }
+
+    pub fn request_peer_service<T>(
+        &mut self,
+        node_id: impl Into<String>,
+        service: impl Into<String>,
+        action: impl Into<String>,
+        payload: Value,
+    ) -> SdkResult<T>
+    where
+        T: DeserializeOwned,
+    {
+        self.call(
+            method::REMOTE_SERVICES_REQUEST,
+            Some(json!(RemoteServiceRequestParams {
+                node_id: node_id.into(),
+                service: service.into(),
+                action: action.into(),
+                payload,
+            })),
+        )
     }
 
     pub fn call<T>(&mut self, method: &str, params: Option<Value>) -> SdkResult<T>
