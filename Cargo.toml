@@ -1,0 +1,11 @@
+[package]
+name = "colligerenet-sdk"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+repository = "https://github.com/VANADAIN/colligerenet-sdk"
+
+[dependencies]
+colligerenet-api = { path = "../colligere/crates/colligerenet-api" }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = "1.0.145"
