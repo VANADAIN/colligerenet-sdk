@@ -7,11 +7,14 @@ use colligerenet_api::{
     PeerParams, RemoteServiceRequestParams, RpcRequest, RpcResponse, error_code, method,
 };
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
 pub use colligerenet_api::{AdapterStatus, ApiEvent, DaemonStatus, PeerInfo, ServiceInfo};
 
 pub type SdkResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
+
+const SERVICES_SERVE_METHOD: &str = "services.serve";
 
 #[derive(Debug)]
 pub struct Client {
@@ -128,6 +131,98 @@ impl Client {
 }
 
 #[derive(Debug)]
+pub struct ServiceHost {
+    reader: BufReader<UnixStream>,
+    writer: UnixStream,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ServiceHostAction {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub risk: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct ServiceHostRequest {
+    pub service: String,
+    pub action: String,
+    pub payload: Value,
+}
+
+impl ServiceHost {
+    pub fn serve_default(
+        app_id: impl Into<String>,
+        service: impl Into<String>,
+        actions: impl IntoIterator<Item = ServiceHostAction>,
+    ) -> SdkResult<Self> {
+        Self::serve(default_socket_path(), app_id, service, actions)
+    }
+
+    pub fn serve(
+        path: impl AsRef<Path>,
+        app_id: impl Into<String>,
+        service: impl Into<String>,
+        actions: impl IntoIterator<Item = ServiceHostAction>,
+    ) -> SdkResult<Self> {
+        let mut writer = UnixStream::connect(path)?;
+        let mut reader = BufReader::new(writer.try_clone()?);
+        let request = RpcRequest::new(
+            SERVICES_SERVE_METHOD,
+            Some(json!({
+                "service": service.into(),
+                "actions": actions.into_iter().collect::<Vec<_>>()
+            })),
+            1,
+        )
+        .with_app_id(app_id.into());
+
+        serde_json::to_writer(&mut writer, &request)?;
+        writer.write_all(b"\n")?;
+        writer.flush()?;
+        ensure_success_response(&mut reader, "service host registration")?;
+
+        Ok(Self { reader, writer })
+    }
+
+    pub fn next_request(&mut self) -> SdkResult<ServiceHostRequest> {
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        if line.trim().is_empty() {
+            return Err("daemon service host stream ended".into());
+        }
+
+        let request = serde_json::from_str::<RpcRequest>(&line)?;
+        Ok(serde_json::from_value(
+            request.params.unwrap_or(Value::Null),
+        )?)
+    }
+
+    pub fn respond<T>(&mut self, result: T) -> SdkResult<()>
+    where
+        T: Serialize,
+    {
+        let response = RpcResponse::success(None, serde_json::to_value(result)?);
+        serde_json::to_writer(&mut self.writer, &response)?;
+        self.writer.write_all(b"\n")?;
+        self.writer.flush()?;
+
+        Ok(())
+    }
+
+    pub fn respond_error(&mut self, code: i64, message: impl Into<String>) -> SdkResult<()> {
+        let response = RpcResponse::error(None, code, message);
+        serde_json::to_writer(&mut self.writer, &response)?;
+        self.writer.write_all(b"\n")?;
+        self.writer.flush()?;
+
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
 pub struct EventStream {
     reader: BufReader<UnixStream>,
     _writer: UnixStream,
@@ -174,6 +269,27 @@ impl EventStream {
 
         Ok(serde_json::from_value(result)?)
     }
+}
+
+fn ensure_success_response(reader: &mut BufReader<UnixStream>, context: &str) -> SdkResult<Value> {
+    let mut line = String::new();
+    reader.read_line(&mut line)?;
+    if line.trim().is_empty() {
+        return Err(format!("daemon returned an empty response for {context}").into());
+    }
+
+    let response = serde_json::from_str::<RpcResponse>(&line)?;
+    if let Some(error) = response.error {
+        return Err(format!("api error {}: {}", error.code, error.message).into());
+    }
+
+    response.result.ok_or_else(|| {
+        format!(
+            "api error {}: response missing result for {context}",
+            error_code::INTERNAL_ERROR
+        )
+        .into()
+    })
 }
 
 pub fn default_socket_path() -> PathBuf {
